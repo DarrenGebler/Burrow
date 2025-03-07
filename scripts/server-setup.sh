@@ -37,6 +37,9 @@ HTTP_PORT=80
 HTTPS_PORT=443
 TUNNEL_PORT=8080
 INSTALL_DIR="/opt/burrow"
+AUTH_ENABLED="false"
+AUTH_SECRET=""
+USE_NGINX="false"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -64,6 +67,18 @@ while [[ $# -gt 0 ]]; do
             INSTALL_DIR="$2"
             shift 2
             ;;
+        --auth-enabled)
+            AUTH_ENABLED="$2"
+            shift 2
+            ;;
+        --auth-secret)
+            AUTH_SECRET="$2"
+            shift 2
+            ;;
+        --use-nginx)
+            USE_NGINX="$2"
+            shift 2
+            ;;
         *)
             print_error "Unknown option: $1"
             exit 1
@@ -79,7 +94,11 @@ fi
 
 print_info "Installing dependencies..."
 apt-get update
-apt-get install -y git curl wget certbot nginx
+apt-get install -y git curl wget certbot libcap2-bin
+
+if [ "$USE_NGINX" = "true" ]; then
+    apt-get install -y nginx
+fi
 
 # Install Go 1.23.0
 print_info "Installing Go 1.23.0..."
@@ -118,7 +137,13 @@ print_info "Building Burrow from source..."
 git clone https://github.com/DarrenGebler/burrow.git /tmp/burrow-src
 cd /tmp/burrow-src
 
-# Build the server binary
+# Set GOPATH and add it to PATH
+export GOPATH=/tmp/gopath
+export PATH=$PATH:$GOPATH/bin
+mkdir -p $GOPATH
+
+# Download dependencies and build
+go mod download
 go build -o $INSTALL_DIR/burrowd cmd/burrowd/main.go
 chown burrow:burrow $INSTALL_DIR/burrowd
 chmod +x $INSTALL_DIR/burrowd
@@ -129,6 +154,19 @@ mkdir -p /etc/burrow
 mkdir -p /etc/burrow/certs
 chown -R burrow:burrow /etc/burrow
 
+# Generate random auth secret if not provided
+if [ -z "$AUTH_SECRET" ] && [ "$AUTH_ENABLED" = "true" ]; then
+    AUTH_SECRET=$(openssl rand -hex 16)
+    print_info "Generated random auth secret: $AUTH_SECRET"
+fi
+
+# If using Nginx as a reverse proxy, set up Burrow with non-privileged ports
+BURROW_HTTP_PORT=$HTTP_PORT
+if [ "$USE_NGINX" = "true" ]; then
+    BURROW_HTTP_PORT=8081
+    print_info "Using Nginx as reverse proxy. Burrow HTTP port set to $BURROW_HTTP_PORT"
+fi
+
 # Create systemd service
 print_info "Creating systemd service..."
 cat > /etc/systemd/system/burrow.service << EOF
@@ -138,7 +176,7 @@ After=network.target
 
 [Service]
 User=burrow
-ExecStart=$INSTALL_DIR/burrowd --port $TUNNEL_PORT --http-port $HTTP_PORT --https-port $HTTPS_PORT --domain "$DOMAIN" --cert-dir /etc/burrow/certs
+ExecStart=$INSTALL_DIR/burrowd --port $TUNNEL_PORT --http-port $BURROW_HTTP_PORT --https-port $HTTPS_PORT --domain "$DOMAIN" --cert-dir /etc/burrow/certs --auth-enabled $AUTH_ENABLED --auth-secret "$AUTH_SECRET"
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65536
@@ -180,6 +218,48 @@ if [ ! -z "$DOMAIN" ] && [ ! -z "$EMAIL" ]; then
 EOF
 fi
 
+# Setup Nginx as reverse proxy if requested
+if [ "$USE_NGINX" = "true" ]; then
+    print_info "Setting up Nginx as reverse proxy..."
+
+    # Create Nginx configuration
+    cat > /etc/nginx/sites-available/burrow << EOF
+server {
+    listen $HTTP_PORT;
+    server_name _;
+
+    location / {
+        proxy_pass http://localhost:$BURROW_HTTP_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+    }
+}
+EOF
+
+    # Enable the site
+    ln -sf /etc/nginx/sites-available/burrow /etc/nginx/sites-enabled/default
+
+    # Test Nginx configuration
+    nginx -t || print_error "Nginx configuration test failed"
+
+    # Restart Nginx
+    systemctl restart nginx
+else
+    # If not using Nginx, stop and disable it if it's installed
+    if systemctl list-unit-files | grep -q nginx; then
+        print_info "Stopping and disabling Nginx..."
+        systemctl stop nginx
+        systemctl disable nginx
+    fi
+
+    # Set capability to bind to privileged ports
+    print_info "Setting capability to bind to privileged ports..."
+    setcap 'cap_net_bind_service=+ep' $INSTALL_DIR/burrowd
+fi
+
 # Enable and start Burrow service
 print_info "Starting Burrow service..."
 systemctl daemon-reload
@@ -209,12 +289,28 @@ else
 fi
 echo "Tunnel port: $TUNNEL_PORT"
 echo
+
+if [ "$AUTH_ENABLED" = "true" ]; then
+    echo "Authentication is enabled"
+    echo "Secret: $AUTH_SECRET"
+    echo
+    echo "To generate a client token, run:"
+    echo "curl -X POST http://$SERVER_IP:$TUNNEL_PORT/admin/token -H 'Authorization: Bearer <admin-token>' -d '{\"client_id\":\"client1\"}'"
+    echo
+fi
+
 echo "Connect from your local machine:"
 echo "=============================="
 echo "burrow connect --server $SERVER_IP:$TUNNEL_PORT --local localhost:8080"
+if [ "$AUTH_ENABLED" = "true" ]; then
+    echo "burrow connect --server $SERVER_IP:$TUNNEL_PORT --local localhost:8080 --auth-token <your-token>"
+fi
 echo
 echo "To view logs:"
 echo "journalctl -u burrow -f"
+echo
+
+echo "IMPORTANT: Make sure your EC2 security group allows traffic on ports $TUNNEL_PORT, $HTTP_PORT, and $HTTPS_PORT"
 echo
 
 exit 0

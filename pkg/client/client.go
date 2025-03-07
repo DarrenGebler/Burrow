@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -189,6 +190,9 @@ func (c *Client) handleMessages() {
 
 // handleRequest handles a request message from the server
 func (c *Client) handleRequest(msg tunnel.Message) {
+	// Log the incoming request for debugging
+	log.Printf("Received request: %s %s", msg.Method, msg.Path)
+
 	body := []byte{}
 	if msg.Body != "" {
 		var err error
@@ -200,7 +204,12 @@ func (c *Client) handleRequest(msg tunnel.Message) {
 		}
 	}
 
-	req, err := http.NewRequest(msg.Method, fmt.Sprintf("http://%s%s", c.config.LocalAddr, msg.Path), strings.NewReader(string(body)))
+	// Construct the local URL
+	localURL := fmt.Sprintf("http://%s%s", c.config.LocalAddr, msg.Path)
+	log.Printf("Forwarding to local service: %s", localURL)
+
+	// Create request to local service
+	req, err := http.NewRequest(msg.Method, localURL, bytes.NewReader(body))
 	if err != nil {
 		log.Printf("Failed to create request: %v", err)
 		c.sendErrorResponse(msg.ID, http.StatusInternalServerError, "Failed to create request")
@@ -214,21 +223,46 @@ func (c *Client) handleRequest(msg tunnel.Message) {
 		}
 	}
 
-	// Forward request to local service
+	// Add X-Forwarded headers
+	req.Header.Set("X-Forwarded-Host", req.Host)
+	req.Header.Set("X-Forwarded-Proto", "http")
+	req.Header.Set("X-Forwarded-For", "burrow-tunnel")
+
+	// Timeout for request to local service
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req = req.WithContext(ctx)
+
+	// Send request to local service
 	resp, err := c.localClient.Do(req)
 	if err != nil {
 		log.Printf("Failed to forward request: %v", err)
-		c.sendErrorResponse(msg.ID, http.StatusBadGateway, "Failed to reach local service")
+
+		// Check if this is because the service isn't running
+		var responseMsg string
+		if strings.Contains(err.Error(), "connection refused") {
+			responseMsg = "Connection refused. Is your local service running on " + c.config.LocalAddr + "?"
+		} else if strings.Contains(err.Error(), "context deadline exceeded") {
+			responseMsg = "Request timed out. Check if your local service is responding."
+		} else {
+			responseMsg = "Failed to reach local service: " + err.Error()
+		}
+
+		c.sendErrorResponse(msg.ID, http.StatusBadGateway, responseMsg)
 		return
 	}
 	defer resp.Body.Close()
 
+	// Read response body
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		log.Printf("Failed to read response body: %v", err)
-		c.sendErrorResponse(msg.ID, http.StatusInternalServerError, "Failed to read response")
+		c.sendErrorResponse(msg.ID, http.StatusInternalServerError, "Failed to read response from local service")
 		return
 	}
+
+	// Log response status for debugging
+	log.Printf("Local service responded with status: %d", resp.StatusCode)
 
 	// Create response message
 	respMsg := tunnel.Message{
@@ -239,7 +273,7 @@ func (c *Client) handleRequest(msg tunnel.Message) {
 		Body:    base64.StdEncoding.EncodeToString(respBody),
 	}
 
-	// Send response
+	// Send response back through tunnel
 	c.mu.RLock()
 	conn := c.conn
 	c.mu.RUnlock()
@@ -251,6 +285,8 @@ func (c *Client) handleRequest(msg tunnel.Message) {
 
 	if err := conn.WriteJSON(respMsg); err != nil {
 		log.Printf("Failed to send response: %v", err)
+	} else {
+		log.Printf("Response sent successfully")
 	}
 }
 

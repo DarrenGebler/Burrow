@@ -11,9 +11,11 @@ import (
 	"github.com/gorilla/websocket"
 	"golang.org/x/crypto/acme/autocert"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -246,10 +248,42 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	host := r.Host
 	var subdomain string
-	if s.config.Domain != "" && len(host) > len(s.config.Domain) {
+
+	log.Printf("Received HTTP request: %s %s, Host: %s", r.Method, r.URL.Path, host)
+	if s.config.Domain != "" && len(host) > len(s.config.Domain) && strings.HasSuffix(host, s.config.Domain) {
 		subdomain = host[:len(host)-len(s.config.Domain)-1]
+		log.Printf("Extracted subdomain from domain: %s", subdomain)
 	} else {
+		// If no domain match, use the host directly as the subdomain identifier
 		subdomain = host
+		log.Printf("Using host as subdomain: %s", subdomain)
+	}
+
+	// If this is a direct IP access with no subdomain specified
+	// Try to see if it's in the Host header format
+	if net.ParseIP(subdomain) != nil || subdomain == "localhost" {
+		// This is an IP or localhost, check if we have a subdomain in a header
+		headerSubdomain := r.Header.Get("X-Burrow-Subdomain")
+		if headerSubdomain != "" {
+			subdomain = headerSubdomain
+			log.Printf("Using subdomain from header: %s", subdomain)
+		} else {
+			// No subdomain specified, check if we should serve admin interface
+			if r.URL.Path == "/admin" {
+				s.handleAdmin(w, r)
+				return
+			}
+
+			// Show a listing of available tunnels if requested
+			if r.URL.Path == "/tunnels" && !s.config.AuthEnabled {
+				s.listTunnels(w, r)
+				return
+			}
+
+			// Default info page
+			s.serveInfoPage(w, r)
+			return
+		}
 	}
 
 	s.mu.RLock()
@@ -257,11 +291,84 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mu.RUnlock()
 
 	if !exists {
-		http.Error(w, "Tunnel not found", http.StatusNotFound)
+		log.Printf("Tunnel not found for subdomain: %s", subdomain)
+		http.Error(w, "Tunnel not found. Please check the subdomain or create a new tunnel.", http.StatusNotFound)
 		return
 	}
 
+	log.Printf("Forwarding request to tunnel: %s", subdomain)
 	t.ForwardRequest(w, r)
+}
+
+// Add a new method to list tunnels (only when auth is disabled)
+func (s *Server) listTunnels(w http.ResponseWriter, r *http.Request) {
+	if s.config.AuthEnabled {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html")
+	tunnelInfos := s.getTunnelInfos()
+
+	html := `
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Burrow Tunnels</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        h1 {
+            border-bottom: 1px solid #eee;
+            padding-bottom: 10px;
+            margin-bottom: 20px;
+        }
+        ul {
+            list-style: none;
+            padding: 0;
+        }
+        li {
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+        }
+        a {
+            color: #0366d6;
+            text-decoration: none;
+        }
+        a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <h1>Active Tunnels</h1>
+    <p>The following tunnels are currently active:</p>
+    <ul>
+`
+
+	if len(tunnelInfos) == 0 {
+		html += `<li>No active tunnels</li>`
+	} else {
+		for _, info := range tunnelInfos {
+			html += fmt.Sprintf(`<li><a href="%s" target="_blank">%s</a> (Created: %s)</li>`,
+				info.URL, info.URL, info.CreatedAt.Format(time.RFC3339))
+		}
+	}
+
+	html += `
+    </ul>
+    <p><em>To connect to a tunnel, use: curl -H "Host: SUBDOMAIN" http://SERVER_IP</em></p>
+</body>
+</html>
+`
+
+	fmt.Fprintf(w, html)
 }
 
 func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
@@ -491,6 +598,69 @@ func (s *Server) handleTokenGeneration(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{
 		"token": token,
 	})
+}
+
+func (s *Server) serveInfoPage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+
+	html := `
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Burrow Tunnel Server</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        h1 {
+            border-bottom: 1px solid #eee;
+            padding-bottom: 10px;
+        }
+        pre {
+            background: #f5f5f5;
+            padding: 10px;
+            border-radius: 5px;
+            overflow-x: auto;
+        }
+        .banner {
+            font-family: monospace;
+            white-space: pre;
+            background: #f5f5f5;
+            padding: 10px;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="banner">
+ ____                              
+|  _ \\                             
+| |_) |_   _ _ __ _ __ _____      __
+|  _ <| | | | '__| '__/ _ \\ \\ /\\ / /
+| |_) | |_| | |  | | | (_) \\ V  V / 
+|____/ \\__,_|_|  |_|  \\___/ \\_/\\_/  
+    </div>
+    <h1>Burrow Tunnel Server</h1>
+    <p>This is a Burrow tunnel server. To use it, you need to:</p>
+    <ol>
+        <li>Connect a client:
+            <pre>burrow connect --server %s:%d --local localhost:3000</pre>
+        </li>
+        <li>Access your service through the tunnel:
+            <pre>curl -H "Host: YOUR_SUBDOMAIN" http://%s</pre>
+        </li>
+    </ol>
+    <p><a href="/tunnels">View active tunnels</a> (if enabled)</p>
+</body>
+</html>
+`
+
+	fmt.Fprintf(w, html, r.Host, s.config.TunnelPort, r.Host)
 }
 
 // Add this helper function to check if a file exists
