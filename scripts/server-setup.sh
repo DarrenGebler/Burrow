@@ -79,7 +79,30 @@ fi
 
 print_info "Installing dependencies..."
 apt-get update
-apt-get install -y golang-go git curl wget certbot nginx
+apt-get install -y git curl wget certbot nginx
+
+# Install Go 1.23.0
+print_info "Installing Go 1.23.0..."
+GO_VERSION="1.23.0"
+GO_TAR_FILE="go$GO_VERSION.linux-amd64.tar.gz"
+GO_DOWNLOAD_URL="https://go.dev/dl/$GO_TAR_FILE"
+
+# Download Go
+cd /tmp
+wget $GO_DOWNLOAD_URL
+
+# Remove any existing Go installation and install the new one
+rm -rf /usr/local/go
+tar -C /usr/local -xzf $GO_TAR_FILE
+rm $GO_TAR_FILE
+
+# Add Go to PATH for all users
+echo 'export PATH=$PATH:/usr/local/go/bin' > /etc/profile.d/go.sh
+chmod +x /etc/profile.d/go.sh
+source /etc/profile.d/go.sh
+
+# Verify Go installation
+go version
 
 # Create burrow user
 print_info "Creating burrow user..."
@@ -92,7 +115,7 @@ chown burrow:burrow $INSTALL_DIR
 
 # Build from source (or download release)
 print_info "Building Burrow from source..."
-git clone https://github.com/yourusername/burrow.git /tmp/burrow-src
+git clone https://github.com/DarrenGebler/burrow.git /tmp/burrow-src
 cd /tmp/burrow-src
 
 # Build the server binary
