@@ -40,6 +40,8 @@ INSTALL_DIR="/opt/burrow"
 AUTH_ENABLED="false"
 AUTH_SECRET=""
 USE_NGINX="false"
+TUNNEL_SUBDOMAIN="tunnel"
+SUBDOMAIN_ONLY="true"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -77,6 +79,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --use-nginx)
             USE_NGINX="$2"
+            shift 2
+            ;;
+        --tunnel-subdomain)
+            TUNNEL_SUBDOMAIN="$2"
+            shift 2
+            ;;
+        --subdomain-only)
+            SUBDOMAIN_ONLY="$2"
             shift 2
             ;;
         *)
@@ -167,8 +177,42 @@ if [ "$USE_NGINX" = "true" ]; then
     print_info "Using Nginx as reverse proxy. Burrow HTTP port set to $BURROW_HTTP_PORT"
 fi
 
+if [ ! -z "$DOMAIN" ] && [ ! -z "$EMAIL" ]; then
+    print_info "Setting up SSL for $TUNNEL_SUBDOMAIN.$DOMAIN..."
+
+    # First try to get wildcard cert for *.tunnel.domain.com
+    certbot certonly --manual --preferred-challenges dns \
+      --agree-tos --email $EMAIL \
+      -d "$TUNNEL_SUBDOMAIN.$DOMAIN" -d "*.$TUNNEL_SUBDOMAIN.$DOMAIN" \
+      --manual-public-ip-logging-ok
+
+    # Link certificates to Burrow certificate directory
+    ln -sf /etc/letsencrypt/live/$TUNNEL_SUBDOMAIN.$DOMAIN/fullchain.pem /etc/burrow/certs/fullchain.pem
+    ln -sf /etc/letsencrypt/live/$TUNNEL_SUBDOMAIN.$DOMAIN/privkey.pem /etc/burrow/certs/privkey.pem
+    chown -h burrow:burrow /etc/burrow/certs/fullchain.pem /etc/burrow/certs/privkey.pem
+
+    # Set up certificate renewal
+    cat > /etc/cron.d/burrow-cert-renewal << EOF
+0 0 * * * root certbot renew --quiet && systemctl restart burrow
+EOF
+
+    # Show DNS configuration instructions
+    echo ""
+    echo "IMPORTANT: Please add these DNS records:"
+    echo "    Type: A"
+    echo "    Name: $TUNNEL_SUBDOMAIN"
+    echo "    Value: $SERVER_IP"
+    echo ""
+    echo "Also add this record:"
+    echo "    Type: A"
+    echo "    Name: *.$TUNNEL_SUBDOMAIN"
+    echo "    Value: $SERVER_IP"
+    echo ""
+fi
+
 # Create systemd service
 print_info "Creating systemd service..."
+ADMIN_PORT=8081
 cat > /etc/systemd/system/burrow.service << EOF
 [Unit]
 Description=Burrow Tunnel Server
@@ -176,7 +220,7 @@ After=network.target
 
 [Service]
 User=burrow
-ExecStart=$INSTALL_DIR/burrowd --port $TUNNEL_PORT --http-port $BURROW_HTTP_PORT --https-port $HTTPS_PORT --domain "$DOMAIN" --cert-dir /etc/burrow/certs --auth-enabled $AUTH_ENABLED --auth-secret "$AUTH_SECRET"
+ExecStart=$INSTALL_DIR/burrowd --port $ADMIN_PORT --http-port $HTTP_PORT --https-port $HTTPS_PORT --domain "$DOMAIN" --tunnel-subdomain "$TUNNEL_SUBDOMAIN" --subdomain-only $SUBDOMAIN_ONLY --cert-dir /etc/burrow/certs --auth-enabled $AUTH_ENABLED --auth-secret "$AUTH_SECRET"
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65536
@@ -281,13 +325,15 @@ echo
 echo "Server information:"
 echo "==================="
 if [ ! -z "$DOMAIN" ]; then
-    echo "Domain: $DOMAIN (Make sure DNS records point to $SERVER_IP)"
-    echo "Tunnel URL: http://<subdomain>.$DOMAIN"
+    echo "Domain: $DOMAIN"
+    echo "Tunnel subdomain: $TUNNEL_SUBDOMAIN.$DOMAIN"
+    echo "Tunnel URL format: https://your-tunnel-name.$TUNNEL_SUBDOMAIN.$DOMAIN"
+    echo "Admin interface: https://$TUNNEL_SUBDOMAIN.$DOMAIN:$ADMIN_PORT/admin"
 else
     echo "Server IP: $SERVER_IP"
     echo "Tunnel URL: http://$SERVER_IP"
 fi
-echo "Tunnel port: $TUNNEL_PORT"
+echo "Tunnel connection port: $ADMIN_PORT"
 echo
 
 if [ "$AUTH_ENABLED" = "true" ]; then
@@ -301,16 +347,16 @@ fi
 
 echo "Connect from your local machine:"
 echo "=============================="
-echo "burrow connect --server $SERVER_IP:$TUNNEL_PORT --local localhost:8080"
-if [ "$AUTH_ENABLED" = "true" ]; then
-    echo "burrow connect --server $SERVER_IP:$TUNNEL_PORT --local localhost:8080 --auth-token <your-token>"
+if [ ! -z "$DOMAIN" ]; then
+    echo "burrow connect --server $TUNNEL_SUBDOMAIN.$DOMAIN:$ADMIN_PORT --local localhost:8080"
+    if [ "$AUTH_ENABLED" = "true" ]; then
+        echo "burrow connect --server $TUNNEL_SUBDOMAIN.$DOMAIN:$ADMIN_PORT --local localhost:8080 --auth-token <your-token>"
+    fi
+else
+    echo "burrow connect --server $SERVER_IP:$ADMIN_PORT --local localhost:8080"
+    if [ "$AUTH_ENABLED" = "true" ]; then
+        echo "burrow connect --server $SERVER_IP:$ADMIN_PORT --local localhost:8080 --auth-token <your-token>"
+    fi
 fi
-echo
-echo "To view logs:"
-echo "journalctl -u burrow -f"
-echo
-
-echo "IMPORTANT: Make sure your EC2 security group allows traffic on ports $TUNNEL_PORT, $HTTP_PORT, and $HTTPS_PORT"
-echo
 
 exit 0

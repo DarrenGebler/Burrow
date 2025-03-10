@@ -34,6 +34,7 @@ type Tunnel struct {
 	ClientID     string
 	conn         *websocket.Conn
 	mu           sync.RWMutex
+	writeMu      sync.Mutex
 	pendingReqs  map[string]http.ResponseWriter
 	pingInterval time.Duration
 	done         chan struct{}
@@ -100,7 +101,9 @@ func (t *Tunnel) ForwardRequest(w http.ResponseWriter, r *http.Request) {
 	t.pendingReqs[reqID] = w
 	t.mu.Unlock()
 
+	t.writeMu.Lock()
 	if err := t.conn.WriteJSON(msg); err != nil {
+		t.writeMu.Unlock()
 		log.Printf("Tunnel %s write error: %s", t.ID, err)
 		http.Error(w, "Failed to write response", http.StatusInternalServerError)
 
@@ -109,6 +112,7 @@ func (t *Tunnel) ForwardRequest(w http.ResponseWriter, r *http.Request) {
 		t.mu.Unlock()
 		return
 	}
+	t.writeMu.Unlock()
 }
 
 func (t *Tunnel) pingRoutine() {
@@ -119,10 +123,13 @@ func (t *Tunnel) pingRoutine() {
 		select {
 		case <-ticker.C:
 			msg := Message{Type: PingMessage}
+			t.writeMu.Lock()
 			if err := t.conn.WriteJSON(msg); err != nil {
+				t.writeMu.Unlock()
 				log.Printf("Tunnel %s ping error: %s", t.ID, err)
 				return
 			}
+			t.writeMu.Unlock()
 		case <-t.done:
 			return
 		}

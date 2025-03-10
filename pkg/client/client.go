@@ -36,6 +36,7 @@ type Client struct {
 	done         chan struct{}
 	reconnecting bool
 	mu           sync.RWMutex
+	writeMu      sync.Mutex
 }
 
 func New(config *Config) (*Client, error) {
@@ -283,11 +284,13 @@ func (c *Client) handleRequest(msg tunnel.Message) {
 		return
 	}
 
+	c.writeMu.Lock()
 	if err := conn.WriteJSON(respMsg); err != nil {
 		log.Printf("Failed to send response: %v", err)
 	} else {
 		log.Printf("Response sent successfully")
 	}
+	c.writeMu.Unlock()
 }
 
 // sendErrorResponse sends an error response for a request.
@@ -311,6 +314,8 @@ func (c *Client) sendErrorResponse(id string, status int, message string) {
 		return
 	}
 
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	if err := conn.WriteJSON(respMsg); err != nil {
 		log.Printf("Failed to send error response: %v", err)
 	}
@@ -330,6 +335,8 @@ func (c *Client) sendPong() {
 		return
 	}
 
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	if err := conn.WriteJSON(pongMsg); err != nil {
 		log.Printf("Failed to send pong: %v", err)
 	}

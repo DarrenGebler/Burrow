@@ -23,14 +23,16 @@ import (
 const ShutdownTimeout = 10 * time.Second
 
 type Config struct {
-	TunnelPort    int
-	HTTPPort      int
-	HTTPSPort     int
-	Domain        string
-	CertDir       string
-	AuthSecret    string
-	AuthEnabled   bool
-	TokenValidity time.Duration
+	TunnelPort      int
+	HTTPPort        int
+	HTTPSPort       int
+	Domain          string
+	CertDir         string
+	AuthSecret      string
+	AuthEnabled     bool
+	TokenValidity   time.Duration
+	SubdomainOnly   bool
+	TunnelSubdomain string
 }
 
 type Server struct {
@@ -225,12 +227,20 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 
 	hostname := subdomain
 	if s.config.Domain != "" {
-		hostname = fmt.Sprintf("%s.%s", subdomain, s.config.Domain)
+		if s.config.TunnelSubdomain != "" {
+			hostname = fmt.Sprintf("%s.%s.%s", subdomain, s.config.TunnelSubdomain, s.config.Domain)
+		} else {
+			hostname = fmt.Sprintf("%s.%s", subdomain, s.config.Domain)
+		}
 	}
 
-	conn.WriteJSON(map[string]string{
+	if err := conn.WriteJSON(map[string]string{
 		"url": fmt.Sprintf("http://%s", hostname),
-	})
+	}); err != nil {
+		log.Printf("Failed to send tunnel information: %v", err)
+		conn.Close()
+		return
+	}
 
 	go func() {
 		t.Start()
@@ -251,39 +261,67 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	var subdomain string
 
 	log.Printf("Received HTTP request: %s %s, Host: %s", r.Method, r.URL.Path, host)
-	if s.config.Domain != "" && len(host) > len(s.config.Domain) && strings.HasSuffix(host, s.config.Domain) {
-		subdomain = host[:len(host)-len(s.config.Domain)-1]
-		log.Printf("Extracted subdomain from domain: %s", subdomain)
-	} else {
-		// If no domain match, use the host directly as the subdomain identifier
-		subdomain = host
-		log.Printf("Using host as subdomain: %s", subdomain)
-	}
+	// Check for domain and tunnel subdomain configuration
+	if s.config.Domain != "" && s.config.TunnelSubdomain != "" {
+		tunnelDomain := s.config.TunnelSubdomain + "." + s.config.Domain
 
-	// If this is a direct IP access with no subdomain specified
-	// Try to see if it's in the Host header format
-	if net.ParseIP(subdomain) != nil || subdomain == "localhost" {
-		// This is an IP or localhost, check if we have a subdomain in a header
-		headerSubdomain := r.Header.Get("X-Burrow-Subdomain")
-		if headerSubdomain != "" {
-			subdomain = headerSubdomain
-			log.Printf("Using subdomain from header: %s", subdomain)
-		} else {
-			// No subdomain specified, check if we should serve admin interface
+		// Check for *.tunnel.domain.com pattern
+		if strings.HasSuffix(host, tunnelDomain) && len(host) > len(tunnelDomain)+1 {
+			// Extract just the tunnel name part
+			subdomain = host[:len(host)-len(tunnelDomain)-1]
+			log.Printf("Extracted subdomain from tunnel domain: %s", subdomain)
+		} else if host == tunnelDomain {
+			// This is a request to tunnel.domain.com
 			if r.URL.Path == "/admin" {
 				s.handleAdmin(w, r)
 				return
-			}
-
-			// Show a listing of available tunnels if requested
-			if r.URL.Path == "/tunnels" && !s.config.AuthEnabled {
+			} else if r.URL.Path == "/tunnels" && !s.config.AuthEnabled {
 				s.listTunnels(w, r)
 				return
+			} else {
+				// Default info page for tunnel subdomain
+				s.serveInfoPage(w, r)
+				return
 			}
-
-			// Default info page
-			s.serveInfoPage(w, r)
+		} else if s.config.SubdomainOnly && host == s.config.Domain {
+			// This is a request to the root domain with subdomain-only mode
+			http.Error(w, "This server only handles tunnel subdomains", http.StatusNotFound)
 			return
+		} else {
+			// This is some other subdomain, not handled by us
+			http.Error(w, "Unknown subdomain", http.StatusNotFound)
+			return
+		}
+	} else if s.config.Domain != "" && len(host) > len(s.config.Domain) && strings.HasSuffix(host, s.config.Domain) {
+		// Original behavior for direct domain configuration
+		subdomain = host[:len(host)-len(s.config.Domain)-1]
+		log.Printf("Extracted subdomain from domain: %s", subdomain)
+	} else {
+		// Original behavior for direct IP access
+		subdomain = host
+		log.Printf("Using host as subdomain: %s", subdomain)
+
+		// If this is a direct IP access with no subdomain specified
+		if net.ParseIP(subdomain) != nil || subdomain == "localhost" {
+			// Check if we have a subdomain in a header
+			headerSubdomain := r.Header.Get("X-Burrow-Subdomain")
+			if headerSubdomain != "" {
+				subdomain = headerSubdomain
+				log.Printf("Using subdomain from header: %s", subdomain)
+			} else {
+				// No subdomain specified
+				if r.URL.Path == "/admin" {
+					s.handleAdmin(w, r)
+					return
+				} else if r.URL.Path == "/tunnels" && !s.config.AuthEnabled {
+					s.listTunnels(w, r)
+					return
+				} else {
+					// Default info page
+					s.serveInfoPage(w, r)
+					return
+				}
+			}
 		}
 	}
 
@@ -535,7 +573,11 @@ func (s *Server) getTunnelInfos() []TunnelInfo {
 	for id, t := range s.tunnels {
 		hostname := id
 		if s.config.Domain != "" {
-			hostname = fmt.Sprintf("%s.%s", id, s.config.Domain)
+			if s.config.TunnelSubdomain != "" {
+				hostname = fmt.Sprintf("%s.%s.%s", id, s.config.TunnelSubdomain, s.config.Domain)
+			} else {
+				hostname = fmt.Sprintf("%s.%s", id, s.config.Domain)
+			}
 		}
 
 		protocol := "http"

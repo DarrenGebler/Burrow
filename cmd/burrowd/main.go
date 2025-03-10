@@ -14,16 +14,18 @@ import (
 
 func main() {
 	var (
-		port          = flag.Int("port", 8080, "Port to listen for tunnel connections")
-		httpPort      = flag.Int("http-port", 80, "Port to listen for HTTP connections")
-		httpsPort     = flag.Int("https-port", 443, "Port to listen for HTTPS connections")
-		domain        = flag.String("domain", "", "Base domain for tunnels (optional)")
-		certDir       = flag.String("cert-dir", "/etc/burrow/certs", "Directory to store certificates")
-		authSecret    = flag.String("auth-secret", "", "Secret key for authentication")
-		authEnabled   = flag.Bool("auth-enabled", false, "Enable authentication")
-		tokenValidity = flag.Duration("token-validity", 24*time.Hour, "Token validity duration")
-		adminToken    = flag.String("admin-token", "", "Initial admin token (generated if empty)")
-		version       = flag.Bool("version", false, "Print version and exit")
+		port            = flag.Int("port", 8080, "Port to listen for tunnel connections")
+		httpPort        = flag.Int("http-port", 80, "Port to listen for HTTP connections")
+		httpsPort       = flag.Int("https-port", 443, "Port to listen for HTTPS connections")
+		domain          = flag.String("domain", "", "Base domain for tunnels (optional)")
+		certDir         = flag.String("cert-dir", "/etc/burrow/certs", "Directory to store certificates")
+		authSecret      = flag.String("auth-secret", "", "Secret key for authentication")
+		authEnabled     = flag.Bool("auth-enabled", false, "Enable authentication")
+		tokenValidity   = flag.Duration("token-validity", 24*time.Hour, "Token validity duration")
+		adminToken      = flag.String("admin-token", "", "Initial admin token (generated if empty)")
+		version         = flag.Bool("version", false, "Print version and exit")
+		subdomainOnly   = flag.Bool("subdomain-only", false, "Only serve subdomains, ignore root domain")
+		tunnelSubdomain = flag.String("tunnel-subdomain", "tunnel", "Subdomain for tunnels (e.g. 'tunnel' for name.tunnel.domain.com)")
 	)
 	flag.Parse()
 
@@ -33,14 +35,16 @@ func main() {
 	}
 
 	config := &server.Config{
-		TunnelPort:    *port,
-		HTTPPort:      *httpPort,
-		HTTPSPort:     *httpsPort,
-		Domain:        *domain,
-		CertDir:       *certDir,
-		AuthSecret:    *authSecret,
-		AuthEnabled:   *authEnabled,
-		TokenValidity: *tokenValidity,
+		TunnelPort:      *port,
+		HTTPPort:        *httpPort,
+		HTTPSPort:       *httpsPort,
+		Domain:          *domain,
+		CertDir:         *certDir,
+		AuthSecret:      *authSecret,
+		AuthEnabled:     *authEnabled,
+		TokenValidity:   *tokenValidity,
+		SubdomainOnly:   *subdomainOnly,
+		TunnelSubdomain: *tunnelSubdomain,
 	}
 
 	srv, err := server.New(config)
