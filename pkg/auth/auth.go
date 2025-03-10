@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -115,10 +116,11 @@ func (a *Authenticator) VerifyToken(token string) (string, error) {
 	}
 
 	clientID := payloadParts[0]
-	expiry, err := time.Parse(time.RFC3339, payloadParts[2])
+	expiryTimestamp, err := strconv.ParseInt(payloadParts[2], 10, 64)
 	if err != nil {
 		return "", ErrInvalidToken
 	}
+	expiry := time.Unix(expiryTimestamp, 0)
 
 	// Check expiration
 	if time.Now().After(expiry) {

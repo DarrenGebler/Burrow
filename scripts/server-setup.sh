@@ -163,7 +163,7 @@ fi
 # If using Nginx as a reverse proxy, set up Burrow with non-privileged ports
 BURROW_HTTP_PORT=$HTTP_PORT
 if [ "$USE_NGINX" = "true" ]; then
-    BURROW_HTTP_PORT=8081
+    BURROW_HTTP_PORT=8080
     print_info "Using Nginx as reverse proxy. Burrow HTTP port set to $BURROW_HTTP_PORT"
 fi
 

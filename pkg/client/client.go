@@ -79,7 +79,7 @@ func (c *Client) Connect() (string, error) {
 	}
 
 	c.mu.Lock()
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL.String(), nil)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL.String(), header)
 	if err != nil {
 		c.mu.Unlock()
 		return "", fmt.Errorf("failed to connect to server: %v", err)

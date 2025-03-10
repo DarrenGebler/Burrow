@@ -79,6 +79,7 @@ func New(config *Config) (*Server, error) {
 	tunnelMux := http.NewServeMux()
 	tunnelMux.HandleFunc("/tunnel", s.handleTunnel)
 	tunnelMux.HandleFunc("/admin", s.handleAdmin)
+	tunnelMux.HandleFunc("/admin/token", s.handleTokenGeneration)
 
 	s.tunnelSrv = &http.Server{
 		Addr:    fmt.Sprintf(":%d", config.TunnelPort),
