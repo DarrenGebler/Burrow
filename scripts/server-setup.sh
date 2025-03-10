@@ -178,17 +178,17 @@ if [ "$USE_NGINX" = "true" ]; then
 fi
 
 if [ ! -z "$DOMAIN" ] && [ ! -z "$EMAIL" ]; then
-    print_info "Setting up SSL for $TUNNEL_SUBDOMAIN.$DOMAIN..."
+    print_info "Setting up SSL for $DOMAIN..."
 
     # First try to get wildcard cert for *.tunnel.domain.com
     certbot certonly --manual --preferred-challenges dns \
       --agree-tos --email $EMAIL \
-      -d "$TUNNEL_SUBDOMAIN.$DOMAIN" -d "*.$TUNNEL_SUBDOMAIN.$DOMAIN" \
+      -d "$DOMAIN" -d "*.$DOMAIN" \
       --manual-public-ip-logging-ok
 
     # Link certificates to Burrow certificate directory
-    ln -sf /etc/letsencrypt/live/$TUNNEL_SUBDOMAIN.$DOMAIN/fullchain.pem /etc/burrow/certs/fullchain.pem
-    ln -sf /etc/letsencrypt/live/$TUNNEL_SUBDOMAIN.$DOMAIN/privkey.pem /etc/burrow/certs/privkey.pem
+    ln -sf /etc/letsencrypt/live/$DOMAIN/fullchain.pem /etc/burrow/certs/fullchain.pem
+    ln -sf /etc/letsencrypt/live/$DOMAIN/privkey.pem /etc/burrow/certs/privkey.pem
     chown -h burrow:burrow /etc/burrow/certs/fullchain.pem /etc/burrow/certs/privkey.pem
 
     # Set up certificate renewal
@@ -200,12 +200,12 @@ EOF
     echo ""
     echo "IMPORTANT: Please add these DNS records:"
     echo "    Type: A"
-    echo "    Name: $TUNNEL_SUBDOMAIN"
+    echo "    Name: $DOMAIN"
     echo "    Value: $SERVER_IP"
     echo ""
     echo "Also add this record:"
     echo "    Type: A"
-    echo "    Name: *.$TUNNEL_SUBDOMAIN"
+    echo "    Name: *.$DOMAIN"
     echo "    Value: $SERVER_IP"
     echo ""
 fi
