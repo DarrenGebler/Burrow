@@ -581,7 +581,7 @@ func (s *Server) getTunnelInfos() []TunnelInfo {
 		}
 
 		protocol := "http"
-		if s.httpsSrv != nil {
+		if s.config.Domain != "" {
 			protocol = "https"
 		}
 
