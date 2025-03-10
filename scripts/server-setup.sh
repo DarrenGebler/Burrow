@@ -178,14 +178,17 @@ if [ "$USE_NGINX" = "true" ]; then
 fi
 
 if [ ! -z "$DOMAIN" ] && [ ! -z "$EMAIL" ]; then
-    print_info "Setting up SSL for $DOMAIN..."
+    print_info "Setting up SSL certificates with DNS validation..."
 
-    # First try to get wildcard cert for *.tunnel.domain.com
-    certbot certonly --standalone --non-interactive --agree-tos --email $EMAIL -d $DOMAIN -d "*.$DOMAIN"
+    # Get proper wildcard cert for tunnel subdomain using DNS challenge
+    certbot certonly --manual --preferred-challenges dns \
+      --agree-tos --email $EMAIL \
+      -d "$TUNNEL_SUBDOMAIN.$DOMAIN" -d "*.$TUNNEL_SUBDOMAIN.$DOMAIN" \
+      --manual-public-ip-logging-ok
 
     # Link certificates to Burrow certificate directory
-    ln -sf /etc/letsencrypt/live/$DOMAIN/fullchain.pem /etc/burrow/certs/fullchain.pem
-    ln -sf /etc/letsencrypt/live/$DOMAIN/privkey.pem /etc/burrow/certs/privkey.pem
+    ln -sf /etc/letsencrypt/live/$TUNNEL_SUBDOMAIN.$DOMAIN/fullchain.pem /etc/burrow/certs/fullchain.pem
+    ln -sf /etc/letsencrypt/live/$TUNNEL_SUBDOMAIN.$DOMAIN/privkey.pem /etc/burrow/certs/privkey.pem
     chown -h burrow:burrow /etc/burrow/certs/fullchain.pem /etc/burrow/certs/privkey.pem
 
     # Set up certificate renewal
@@ -197,12 +200,12 @@ EOF
     echo ""
     echo "IMPORTANT: Please add these DNS records:"
     echo "    Type: A"
-    echo "    Name: $DOMAIN"
+    echo "    Name: $TUNNEL_SUBDOMAIN.$DOMAIN"
     echo "    Value: $SERVER_IP"
     echo ""
     echo "Also add this record:"
     echo "    Type: A"
-    echo "    Name: *.$DOMAIN"
+    echo "    Name: *.$TUNNEL_SUBDOMAIN.$DOMAIN"
     echo "    Value: $SERVER_IP"
     echo ""
 fi
@@ -217,7 +220,7 @@ After=network.target
 
 [Service]
 User=burrow
-ExecStart=$INSTALL_DIR/burrowd --port $ADMIN_PORT --http-port $HTTP_PORT --https-port $HTTPS_PORT --domain "$DOMAIN" --tunnel-subdomain "$TUNNEL_SUBDOMAIN" --subdomain-only $SUBDOMAIN_ONLY --cert-dir /etc/burrow/certs --auth-enabled $AUTH_ENABLED --auth-secret "$AUTH_SECRET"
+ExecStart=$INSTALL_DIR/burrowd --port $ADMIN_PORT --http-port $BURROW_HTTP_PORT --https-port $HTTPS_PORT --domain "$DOMAIN" --tunnel-subdomain "$TUNNEL_SUBDOMAIN" --subdomain-only $SUBDOMAIN_ONLY --cert-dir /etc/burrow/certs --auth-enabled $AUTH_ENABLED --auth-secret "$AUTH_SECRET"
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65536
@@ -241,22 +244,6 @@ elif command -v firewall-cmd > /dev/null; then
     firewall-cmd --reload
 else
     print_info "No firewall detected, skipping firewall configuration"
-fi
-
-# Set up SSL if domain is provided
-if [ ! -z "$DOMAIN" ] && [ ! -z "$EMAIL" ]; then
-    print_info "Setting up SSL for $DOMAIN..."
-    certbot certonly --standalone --non-interactive --agree-tos --email $EMAIL -d $DOMAIN -d "*.$DOMAIN"
-
-    # Link certificates to Burrow certificate directory
-    ln -sf /etc/letsencrypt/live/$DOMAIN/fullchain.pem /etc/burrow/certs/fullchain.pem
-    ln -sf /etc/letsencrypt/live/$DOMAIN/privkey.pem /etc/burrow/certs/privkey.pem
-    chown -h burrow:burrow /etc/burrow/certs/fullchain.pem /etc/burrow/certs/privkey.pem
-
-    # Set up certificate renewal
-    cat > /etc/cron.d/burrow-cert-renewal << EOF
-0 0 * * * root certbot renew --quiet && systemctl restart burrow
-EOF
 fi
 
 # Setup Nginx as reverse proxy if requested
@@ -360,7 +347,7 @@ if [ ! -z "$DOMAIN" ]; then
     echo "Domain: $DOMAIN"
     echo "Tunnel subdomain: $TUNNEL_SUBDOMAIN.$DOMAIN"
     echo "Tunnel URL format: https://your-tunnel-name.$TUNNEL_SUBDOMAIN.$DOMAIN"
-    echo "Admin interface: https://$TUNNEL_SUBDOMAIN.$DOMAIN:$ADMIN_PORT/admin"
+    echo "Admin interface: https://$TUNNEL_SUBDOMAIN.$DOMAIN/admin"
 else
     echo "Server IP: $SERVER_IP"
     echo "Tunnel URL: http://$SERVER_IP"
@@ -373,7 +360,7 @@ if [ "$AUTH_ENABLED" = "true" ]; then
     echo "Secret: $AUTH_SECRET"
     echo
     echo "To generate a client token, run:"
-    echo "curl -X POST http://$SERVER_IP:$TUNNEL_PORT/admin/token -H 'Authorization: Bearer <admin-token>' -d '{\"client_id\":\"client1\"}'"
+    echo "curl -X POST http://$SERVER_IP:$ADMIN_PORT/admin/token -H 'Authorization: Bearer <admin-token>' -d '{\"client_id\":\"client1\"}'"
     echo
 fi
 
