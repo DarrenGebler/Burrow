@@ -235,12 +235,12 @@ if command -v ufw > /dev/null; then
     ufw allow ssh
     ufw allow $HTTP_PORT/tcp
     ufw allow $HTTPS_PORT/tcp
-    ufw allow $TUNNEL_PORT/tcp
+    ufw allow $ADMIN_PORT/tcp
     ufw --force enable
 elif command -v firewall-cmd > /dev/null; then
     firewall-cmd --permanent --add-port=$HTTP_PORT/tcp
     firewall-cmd --permanent --add-port=$HTTPS_PORT/tcp
-    firewall-cmd --permanent --add-port=$TUNNEL_PORT/tcp
+    firewall-cmd --permanent --add-port=$ADMIN_PORT/tcp
     firewall-cmd --reload
 else
     print_info "No firewall detected, skipping firewall configuration"
@@ -270,6 +270,41 @@ if [ "$USE_NGINX" = "true" ]; then
     cat > /etc/nginx/sites-available/burrow << EOF
 server {
     listen $HTTP_PORT;
+    server_name $TUNNEL_SUBDOMAIN.$DOMAIN *.$TUNNEL_SUBDOMAIN.$DOMAIN;
+
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
+}
+
+server {
+    listen $HTTPS_PORT ssl;
+    server_name $TUNNEL_SUBDOMAIN.$DOMAIN *.$TUNNEL_SUBDOMAIN.$DOMAIN;
+
+    ssl_certificate /etc/burrow/certs/fullchain.pem;
+    ssl_certificate_key /etc/burrow/certs/privkey.pem;
+
+    # Handle WebSocket connections on standard port
+    location /tunnel {
+        proxy_pass http://localhost:$ADMIN_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+    }
+
+    # Regular HTTP traffic
+    location / {
+        proxy_pass http://localhost:$BURROW_HTTP_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+    }
+}
+
+server {
+    listen $HTTP_PORT default_server;
     server_name _;
 
     location / {
@@ -348,9 +383,9 @@ fi
 echo "Connect from your local machine:"
 echo "=============================="
 if [ ! -z "$DOMAIN" ]; then
-    echo "burrow connect --server $TUNNEL_SUBDOMAIN.$DOMAIN:$ADMIN_PORT --local localhost:8080"
+    echo "burrow connect --server $TUNNEL_SUBDOMAIN.$DOMAIN --secure --local localhost:8080"
     if [ "$AUTH_ENABLED" = "true" ]; then
-        echo "burrow connect --server $TUNNEL_SUBDOMAIN.$DOMAIN:$ADMIN_PORT --local localhost:8080 --auth-token <your-token>"
+        echo "burrow connect --server $TUNNEL_SUBDOMAIN.$DOMAIN --secure --local localhost:8080 --auth-token <your-token>"
     fi
 else
     echo "burrow connect --server $SERVER_IP:$ADMIN_PORT --local localhost:8080"
