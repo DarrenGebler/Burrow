@@ -54,6 +54,15 @@ type TunnelInfo struct {
 	URL       string    `json:"url"`
 }
 
+func IsPortInUse(port int) bool {
+	conn, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return true
+	}
+	conn.Close()
+	return false
+}
+
 func New(config *Config) (*Server, error) {
 	authConfig := auth.Config{
 		Secret:        config.AuthSecret,
@@ -98,6 +107,10 @@ func New(config *Config) (*Server, error) {
 	}
 
 	if config.Domain != "" && !config.DisableHTTPS {
+		if IsPortInUse(config.HTTPSPort) {
+			log.Printf("Warning: Port %d is already in use, disabling HTTPS server", config.HTTPSPort)
+			config.DisableHTTPS = true
+		}
 		httpsMux := http.NewServeMux()
 		httpsMux.HandleFunc("/", s.handleHTTP)
 
@@ -157,6 +170,11 @@ func (s *Server) Start() error {
 
 	if s.httpsSrv != nil {
 		go func() {
+			if IsPortInUse(s.config.HTTPSPort) {
+				log.Printf("HTTPS port %d is in use, skipping HTTPS server", s.config.HTTPSPort)
+				return
+			}
+
 			log.Printf("Starting HTTPS server on port %d", s.config.HTTPSPort)
 			if err := s.httpsSrv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				log.Printf("HTTPS server failed: %v", err)

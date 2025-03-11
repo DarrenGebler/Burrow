@@ -179,6 +179,39 @@ if [ "$USE_NGINX" = "true" ]; then
     print_info "Using Nginx as reverse proxy. Burrow HTTP port set to $BURROW_HTTP_PORT"
 fi
 
+print_info "Creating configuration file..."
+cat > /etc/burrow/burrow.yaml << EOF
+# Burrow Configuration File
+# Generated on $(date)
+
+# Server ports
+tunnel_port: $ADMIN_PORT
+http_port: $INTERNAL_HTTP_PORT
+https_port: $EXTERNAL_HTTPS_PORT
+
+# Domain settings
+domain: "$DOMAIN"
+tunnel_subdomain: "$TUNNEL_SUBDOMAIN"
+subdomain_only: $SUBDOMAIN_ONLY
+
+# TLS settings
+cert_dir: "/etc/burrow/certs"
+disable_https: $([ "$USE_NGINX" = "true" ] && echo "true" || echo "false")
+
+# Authentication
+auth_enabled: $AUTH_ENABLED
+auth_secret: "$AUTH_SECRET"
+token_validity: "24h"
+EOF
+
+chown burrow:burrow /etc/burrow/burrow.yaml
+chmod 600 /etc/burrow/burrow.yaml
+
+print_info "Checking for port conflicts..."
+if [ "$USE_NGINX" = "true" ] && (lsof -i :443 > /dev/null 2>&1 || lsof -i :80 > /dev/null 2>&1); then
+    print_info "Nginx will handle ports 80/443, Burrow will be configured with HTTPS disabled"
+fi
+
 if [ ! -z "$DOMAIN" ] && [ ! -z "$EMAIL" ]; then
     print_info "Setting up SSL certificates with DNS validation..."
 
@@ -216,13 +249,10 @@ fi
 print_info "Creating systemd service..."
 
 # Configure the startup command based on whether Nginx is used
+EXEC_START="$INSTALL_DIR/burrowd --config /etc/burrow/burrow.yaml"
 if [ "$USE_NGINX" = "true" ]; then
-    # When using Nginx, add the disable-https flag to tell Burrow not to bind to HTTPS port
-    EXEC_START="$INSTALL_DIR/burrowd --port $ADMIN_PORT --http-port $INTERNAL_HTTP_PORT --domain \"$DOMAIN\" --tunnel-subdomain \"$TUNNEL_SUBDOMAIN\" --subdomain-only $SUBDOMAIN_ONLY --cert-dir /etc/burrow/certs --auth-enabled $AUTH_ENABLED --auth-secret \"$AUTH_SECRET\" --disable-https true"
     print_info "Configuring Burrow with HTTPS disabled (Nginx will handle HTTPS)"
 else
-    # When not using Nginx, Burrow handles both HTTP and HTTPS directly
-    EXEC_START="$INSTALL_DIR/burrowd --port $ADMIN_PORT --http-port $EXTERNAL_HTTP_PORT --https-port $EXTERNAL_HTTPS_PORT --domain \"$DOMAIN\" --tunnel-subdomain \"$TUNNEL_SUBDOMAIN\" --subdomain-only $SUBDOMAIN_ONLY --cert-dir /etc/burrow/certs --auth-enabled $AUTH_ENABLED --auth-secret \"$AUTH_SECRET\""
     print_info "Configuring Burrow to handle HTTP and HTTPS directly"
 fi
 
