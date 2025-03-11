@@ -33,6 +33,7 @@ type Config struct {
 	TokenValidity   time.Duration
 	SubdomainOnly   bool
 	TunnelSubdomain string
+	DisableHTTPS    bool
 }
 
 type Server struct {
@@ -96,7 +97,7 @@ func New(config *Config) (*Server, error) {
 		Handler: httpMux,
 	}
 
-	if config.Domain != "" {
+	if config.Domain != "" && !config.DisableHTTPS {
 		httpsMux := http.NewServeMux()
 		httpsMux.HandleFunc("/", s.handleHTTP)
 

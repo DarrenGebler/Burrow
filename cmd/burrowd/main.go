@@ -26,6 +26,7 @@ func main() {
 		version         = flag.Bool("version", false, "Print version and exit")
 		subdomainOnly   = flag.Bool("subdomain-only", false, "Only serve subdomains, ignore root domain")
 		tunnelSubdomain = flag.String("tunnel-subdomain", "tunnel", "Subdomain for tunnels (e.g. 'tunnel' for name.tunnel.domain.com)")
+		disableHTTPS    = flag.Bool("disable-https", false, "Disable HTTPS server (useful when behind a reverse proxy)")
 	)
 	flag.Parse()
 
@@ -45,6 +46,7 @@ func main() {
 		TokenValidity:   *tokenValidity,
 		SubdomainOnly:   *subdomainOnly,
 		TunnelSubdomain: *tunnelSubdomain,
+		DisableHTTPS:    *disableHTTPS,
 	}
 
 	srv, err := server.New(config)

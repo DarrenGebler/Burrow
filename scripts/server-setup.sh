@@ -33,9 +33,11 @@ echo
 
 DOMAIN=""
 EMAIL=""
-HTTP_PORT=80
-HTTPS_PORT=443
-TUNNEL_PORT=8080
+EXTERNAL_HTTP_PORT=80
+EXTERNAL_HTTPS_PORT=443
+INTERNAL_HTTP_PORT=8080
+INTERNAL_HTTPS_PORT=8443
+ADMIN_PORT=8081
 INSTALL_DIR="/opt/burrow"
 AUTH_ENABLED="false"
 AUTH_SECRET=""
@@ -54,15 +56,15 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --http-port)
-            HTTP_PORT="$2"
+            EXTERNAL_HTTP_PORT="$2"
             shift 2
             ;;
         --https-port)
-            HTTPS_PORT="$2"
+            EXTERNAL_HTTPS_PORT="$2"
             shift 2
             ;;
         --tunnel-port)
-            TUNNEL_PORT="$2"
+            ADMIN_PORT="$2"
             shift 2
             ;;
         --install-dir)
@@ -212,7 +214,18 @@ fi
 
 # Create systemd service
 print_info "Creating systemd service..."
-ADMIN_PORT=8081
+
+# Configure the startup command based on whether Nginx is used
+if [ "$USE_NGINX" = "true" ]; then
+    # When using Nginx, add the disable-https flag to tell Burrow not to bind to HTTPS port
+    EXEC_START="$INSTALL_DIR/burrowd --port $ADMIN_PORT --http-port $INTERNAL_HTTP_PORT --domain \"$DOMAIN\" --tunnel-subdomain \"$TUNNEL_SUBDOMAIN\" --subdomain-only $SUBDOMAIN_ONLY --cert-dir /etc/burrow/certs --auth-enabled $AUTH_ENABLED --auth-secret \"$AUTH_SECRET\" --disable-https true"
+    print_info "Configuring Burrow with HTTPS disabled (Nginx will handle HTTPS)"
+else
+    # When not using Nginx, Burrow handles both HTTP and HTTPS directly
+    EXEC_START="$INSTALL_DIR/burrowd --port $ADMIN_PORT --http-port $EXTERNAL_HTTP_PORT --https-port $EXTERNAL_HTTPS_PORT --domain \"$DOMAIN\" --tunnel-subdomain \"$TUNNEL_SUBDOMAIN\" --subdomain-only $SUBDOMAIN_ONLY --cert-dir /etc/burrow/certs --auth-enabled $AUTH_ENABLED --auth-secret \"$AUTH_SECRET\""
+    print_info "Configuring Burrow to handle HTTP and HTTPS directly"
+fi
+
 cat > /etc/systemd/system/burrow.service << EOF
 [Unit]
 Description=Burrow Tunnel Server
@@ -220,7 +233,7 @@ After=network.target
 
 [Service]
 User=burrow
-ExecStart=$INSTALL_DIR/burrowd --port $ADMIN_PORT --http-port $BURROW_HTTP_PORT --https-port $HTTPS_PORT --domain "$DOMAIN" --tunnel-subdomain "$TUNNEL_SUBDOMAIN" --subdomain-only $SUBDOMAIN_ONLY --cert-dir /etc/burrow/certs --auth-enabled $AUTH_ENABLED --auth-secret "$AUTH_SECRET"
+ExecStart=$EXEC_START
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65536
@@ -233,13 +246,13 @@ EOF
 print_info "Configuring firewall..."
 if command -v ufw > /dev/null; then
     ufw allow ssh
-    ufw allow $HTTP_PORT/tcp
-    ufw allow $HTTPS_PORT/tcp
+    ufw allow $EXTERNAL_HTTP_PORT/tcp
+    ufw allow $EXTERNAL_HTTPS_PORT/tcp
     ufw allow $ADMIN_PORT/tcp
     ufw --force enable
 elif command -v firewall-cmd > /dev/null; then
-    firewall-cmd --permanent --add-port=$HTTP_PORT/tcp
-    firewall-cmd --permanent --add-port=$HTTPS_PORT/tcp
+    firewall-cmd --permanent --add-port=$EXTERNAL_HTTP_PORT/tcp
+    firewall-cmd --permanent --add-port=$EXTERNAL_HTTPS_PORT/tcp
     firewall-cmd --permanent --add-port=$ADMIN_PORT/tcp
     firewall-cmd --reload
 else
@@ -253,7 +266,7 @@ if [ "$USE_NGINX" = "true" ]; then
     # Create Nginx configuration
     cat > /etc/nginx/sites-available/burrow << EOF
 server {
-    listen $HTTP_PORT;
+    listen $EXTERNAL_HTTP_PORT;
     server_name $TUNNEL_SUBDOMAIN.$DOMAIN *.$TUNNEL_SUBDOMAIN.$DOMAIN;
 
     location / {
@@ -262,7 +275,7 @@ server {
 }
 
 server {
-    listen $HTTPS_PORT ssl;
+    listen $EXTERNAL_HTTPS_PORT ssl;
     server_name $TUNNEL_SUBDOMAIN.$DOMAIN *.$TUNNEL_SUBDOMAIN.$DOMAIN;
 
     ssl_certificate /etc/burrow/certs/fullchain.pem;
@@ -280,7 +293,7 @@ server {
 
     # Regular HTTP traffic
     location / {
-        proxy_pass http://localhost:$BURROW_HTTP_PORT;
+        proxy_pass http://localhost:$INTERNAL_HTTP_PORT;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -288,11 +301,11 @@ server {
 }
 
 server {
-    listen $HTTP_PORT default_server;
+    listen $EXTERNAL_HTTP_PORT default_server;
     server_name _;
 
     location / {
-        proxy_pass http://localhost:$BURROW_HTTP_PORT;
+        proxy_pass http://localhost:$INTERNAL_HTTP_PORT;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
